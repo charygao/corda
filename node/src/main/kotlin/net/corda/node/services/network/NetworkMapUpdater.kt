@@ -118,7 +118,7 @@ class NetworkMapUpdater(private val networkMapCache: NetworkMapCacheInternal,
                 .subscribe {
                     for (update in it) {
                         when (update) {
-                            is NodeInfoUpdate.Add -> networkMapCache.addNode(update.nodeInfo)
+                            is NodeInfoUpdate.Add -> networkMapCache.addOrUpdateNode(update.nodeInfo)
                             is NodeInfoUpdate.Remove -> {
                                 if (update.hash != ourNodeInfoHash) {
                                     val nodeInfo = networkMapCache.getNodeByHash(update.hash)
@@ -178,7 +178,7 @@ class NetworkMapUpdater(private val networkMapCache: NetworkMapCacheInternal,
             exitOnParametersMismatch(globalNetworkMap)
         }
         val currentNodeHashes = networkMapCache.allNodeHashes
-        // Remove node info from network map.
+        // Calculate any nodes that are now gone and remove _only_ them from the cache
         (currentNodeHashes - allHashesFromNetworkMap - nodeInfoWatcher.processedNodeInfoHashes)
                 .mapNotNull { if (it != ourNodeInfoHash) networkMapCache.getNodeByHash(it) else null }
                 .forEach(networkMapCache::removeNode)
@@ -207,7 +207,7 @@ class NetworkMapUpdater(private val networkMapCache: NetworkMapCacheInternal,
                             }
                         }, executorToUseForDownloadingNodeInfos).thenAcceptAsync(Consumer { retrievedNodeInfos ->
                             // Add new node info to the network map cache, these could be new node info or modification of node info for existing nodes.
-                            networkMapCache.addNodes(retrievedNodeInfos)
+                            networkMapCache.addOrUpdateNodes(retrievedNodeInfos)
                         }, executorToUseForInsertionIntoDB)
                     }.toTypedArray()
             //wait for all the futures to complete

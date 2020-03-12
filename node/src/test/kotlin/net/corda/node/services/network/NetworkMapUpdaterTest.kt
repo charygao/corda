@@ -118,7 +118,7 @@ class NetworkMapUpdaterTest {
         //Test adding new node.
         networkMapClient.publish(signedNodeInfo1)
         //Not subscribed yet.
-        verify(networkMapCache, times(0)).addNode(any())
+        verify(networkMapCache, times(0)).addOrUpdateNode(any())
 
         startUpdater()
         networkMapClient.publish(signedNodeInfo2)
@@ -195,12 +195,46 @@ class NetworkMapUpdaterTest {
     }
 
     @Test(timeout=300_000)
+    fun `process remove, add, and update node from network map`() {
+        setUpdater()
+        val (nodeInfo1, signedNodeInfo1) = createNodeInfoAndSigned("Info 1")
+        val (nodeInfo2, signedNodeInfo2) = createNodeInfoAndSigned("Info 2")
+        val (nodeInfo3, signedNodeInfo3) = createNodeInfoAndSigned("Info 3")
+        val (nodeInfo2_2, signedNodeInfo2_2) = createNodeInfoAndSigned("Info 2", serial = 2)
+
+        //Add all nodes.
+        networkMapClient.publish(signedNodeInfo1)
+        networkMapClient.publish(signedNodeInfo2)
+
+        startUpdater()
+        advanceTime()
+        //TODO: Remove sleep in unit test.
+        Thread.sleep(2L * cacheExpiryMs)
+
+        // remove one node, add another and update a third.
+        server.removeNodeInfo(nodeInfo1)
+        networkMapClient.publish(signedNodeInfo3)
+        networkMapClient.publish(signedNodeInfo2_2)
+
+        //TODO: Remove sleep in unit test.
+        Thread.sleep(2L * cacheExpiryMs)
+        verify(networkMapCache, times(1)).removeNode(nodeInfo1)
+        verify(networkMapCache, times(1)).addOrUpdateNodes(listOf(nodeInfo2))
+        verify(networkMapCache, times(1)).addOrUpdateNodes(listOf(nodeInfo2_2))
+        verify(networkMapCache, times(1)).addOrUpdateNodes(listOf(nodeInfo3))
+        assertThat(networkMapCache.allNodeHashes).hasSameElementsAs(listOf(
+                signedNodeInfo2_2.raw.hash,
+                signedNodeInfo3.raw.hash
+        ))
+    }
+
+    @Test(timeout=300_000)
 	fun `receive node infos from directory, without a network map`() {
         setUpdater(netMapClient = null)
         val fileNodeInfoAndSigned = createNodeInfoAndSigned("Info from file")
 
         //Not subscribed yet.
-        verify(networkMapCache, times(0)).addNode(any())
+        verify(networkMapCache, times(0)).addOrUpdateNode(any())
 
         startUpdater()
 
@@ -208,8 +242,8 @@ class NetworkMapUpdaterTest {
         assertThat(nodeReadyFuture).isNotDone()
         advanceTime()
 
-        verify(networkMapCache, times(1)).addNode(any())
-        verify(networkMapCache, times(1)).addNode(fileNodeInfoAndSigned.nodeInfo)
+        verify(networkMapCache, times(1)).addOrUpdateNode(any())
+        verify(networkMapCache, times(1)).addOrUpdateNode(fileNodeInfoAndSigned.nodeInfo)
         assertThat(nodeReadyFuture).isDone()
 
         assertThat(networkMapCache.allNodeHashes).containsOnly(fileNodeInfoAndSigned.nodeInfo.serialize().hash)
@@ -330,9 +364,9 @@ class NetworkMapUpdaterTest {
         NodeInfoWatcher.saveToFile(nodeInfoDir, fileNodeInfoAndSigned1)
         NodeInfoWatcher.saveToFile(nodeInfoDir, fileNodeInfoAndSigned2)
         advanceTime()
-        verify(networkMapCache, times(2)).addNode(any())
-        verify(networkMapCache, times(1)).addNode(fileNodeInfoAndSigned1.nodeInfo)
-        verify(networkMapCache, times(1)).addNode(fileNodeInfoAndSigned2.nodeInfo)
+        verify(networkMapCache, times(2)).addOrUpdateNode(any())
+        verify(networkMapCache, times(1)).addOrUpdateNode(fileNodeInfoAndSigned1.nodeInfo)
+        verify(networkMapCache, times(1)).addOrUpdateNode(fileNodeInfoAndSigned2.nodeInfo)
         assertThat(networkMapCache.allNodeHashes).containsExactlyInAnyOrder(fileNodeInfoAndSigned1.signed.raw.hash, fileNodeInfoAndSigned2.signed.raw.hash)
         //Remove one of the nodes
         val fileName1 = "${NodeInfoFilesCopier.NODE_INFO_FILE_NAME_PREFIX}${fileNodeInfoAndSigned1.nodeInfo.legalIdentities[0].name.serialize().hash}"
@@ -360,7 +394,7 @@ class NetworkMapUpdaterTest {
         networkMapClient.publish(serverSignedNodeInfo)
         startUpdater()
         advanceTime()
-        verify(networkMapCache, times(1)).addNode(localNodeInfo)
+        verify(networkMapCache, times(1)).addOrUpdateNode(localNodeInfo)
         Thread.sleep(2L * cacheExpiryMs)
         //Node from file has higher serial than the one from NetworkMapServer
         assertThat(networkMapCache.allNodeHashes).containsOnly(localSignedNodeInfo.signed.raw.hash)
@@ -382,7 +416,7 @@ class NetworkMapUpdaterTest {
         val (myInfo, signedMyInfo) = createNodeInfoAndSigned("My node info")
         val (_, signedOtherInfo) = createNodeInfoAndSigned("Other info")
         setUpdater()
-        networkMapCache.addNode(myInfo) //Simulate behaviour on node startup when our node info is added to cache
+        networkMapCache.addOrUpdateNode(myInfo) //Simulate behaviour on node startup when our node info is added to cache
         networkMapClient.publish(signedOtherInfo)
         startUpdater(ourNodeInfo = signedMyInfo)
         Thread.sleep(2L * cacheExpiryMs)
@@ -405,7 +439,7 @@ class NetworkMapUpdaterTest {
         //Test adding new node.
         networkMapClient.publish(signedNodeInfo1)
         //Not subscribed yet.
-        verify(networkMapCache, times(0)).addNode(any())
+        verify(networkMapCache, times(0)).addOrUpdateNode(any())
 
         startUpdater()
 
@@ -458,7 +492,7 @@ class NetworkMapUpdaterTest {
         return mock {
             on { nodeReady }.thenReturn(nodeReadyFuture)
             val data = ConcurrentHashMap<Party, NodeInfo>()
-            on { addNode(any()) }.then {
+            on { addOrUpdateNode(any()) }.then {
                 val nodeInfo = it.arguments[0] as NodeInfo
                 val party = nodeInfo.legalIdentities[0]
                 data.compute(party) { _, current ->
@@ -466,7 +500,7 @@ class NetworkMapUpdaterTest {
                 }
             }
 
-            on { addNodes(any<List<NodeInfo>>()) }.then {
+            on { addOrUpdateNodes(any<List<NodeInfo>>()) }.then {
                 @Suppress("UNCHECKED_CAST")
                 val nodeInfos = it.arguments[0] as List<NodeInfo>
                 nodeInfos.forEach { nodeInfo ->
@@ -481,8 +515,11 @@ class NetworkMapUpdaterTest {
         }
     }
 
-    private fun createNodeInfoAndSigned(org: String, keyPair: KeyPair = Crypto.generateKeyPair(X509Utilities.DEFAULT_TLS_SIGNATURE_SCHEME)): NodeInfoAndSigned {
-        val serial: Long = 1
+    private fun createNodeInfoAndSigned(
+            org: String,
+            keyPair: KeyPair = Crypto.generateKeyPair(X509Utilities.DEFAULT_TLS_SIGNATURE_SCHEME),
+            serial: Long = 1
+    ): NodeInfoAndSigned {
         val platformVersion = 1
         val nodeInfoBuilder = TestNodeInfoBuilder()
         nodeInfoBuilder.addLegalIdentity(CordaX500Name(org, "London", "GB"), keyPair, keyPair)
